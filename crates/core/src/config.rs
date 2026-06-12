@@ -72,7 +72,7 @@ pub struct McConfig {
 impl Default for McConfig {
     fn default() -> Self {
         Self {
-            default_version: "1.21.11".into(),
+            default_version: "26.1.2".into(),
             heap_mb: 4096,
             server_port: 25565,
             java_path: String::new(),

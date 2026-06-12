@@ -14,7 +14,7 @@ public_host = ""
 data_dir   = "./data"
 
 [mc]
-default_version = "1.21.11"
+default_version = "26.1.2"
 heap_mb         = 4096
 # MC 游戏端口。每次启动 Paper 都会写入 server.properties。
 server_port     = 25565

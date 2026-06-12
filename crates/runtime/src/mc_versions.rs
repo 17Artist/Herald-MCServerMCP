@@ -4,20 +4,21 @@
 //! 自身的版本要求。这张表只覆盖 1.16.5 起的 Paper 支持范围；未知版本回退到
 //! 当前已知的最大值（保守策略，宁可装个新 JRE 也别启不起来）。
 
-/// 给定 MC 版本号字符串（"1.20.4"、"1.21"、"1.21.5" 等），返回最低要求的 Java major。
+/// 给定 MC 版本号字符串（"1.20.4"、"1.21"、"26.1.2" 等），返回最低要求的 Java major。
 ///
 /// 解析失败 / 未知版本 → 返回最高已知值（21）。
 pub fn required_java_major(mc_version: &str) -> u32 {
+    // 新版本号格式（26.x.x）：Mojang 2026 年起改用年号制，全部需要 Java 21+。
+    if !mc_version.starts_with("1.") {
+        return 21;
+    }
+
     let parsed = parse_mc_version(mc_version);
-    let (major, minor, patch) = match parsed {
+    let (_major, minor, patch) = match parsed {
         Some(t) => t,
         None => return 21,
     };
 
-    // Mojang 在 1.20.5 (24w14a 之后) 升 Java 21；之前 1.18.x 起为 Java 17。
-    if major != 1 {
-        return 21;
-    }
     match (minor, patch) {
         (m, _) if m >= 21 => 21,
         (20, p) if p >= 5 => 21,
@@ -72,5 +73,12 @@ mod tests {
     #[test]
     fn snapshot_prefix_handled() {
         assert_eq!(required_java_major("1.20.4-pre1"), 17);
+    }
+    #[test]
+    fn new_version_scheme_26x() {
+        assert_eq!(required_java_major("26.1"), 21);
+        assert_eq!(required_java_major("26.1.2"), 21);
+        assert_eq!(required_java_major("26.2"), 21);
+        assert_eq!(required_java_major("27.0.1"), 21);
     }
 }
