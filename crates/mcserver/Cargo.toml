@@ -1,0 +1,24 @@
+[package]
+name = "herald-mcserver-mcserver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+herald-mcserver-core.workspace = true
+herald-mcserver-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+uuid.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+hex.workspace = true

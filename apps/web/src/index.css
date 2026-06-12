@@ -1,0 +1,235 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0c;
+  --bg-2: #111114;
+  --bg-3: #18181b;
+  --border: #232329;
+  --border-2: #2c2c33;
+  --fg: #e4e4e7;
+  --fg-2: #a1a1aa;
+  --fg-3: #52525b;
+  --accent: #a78bfa;
+  --accent-soft: rgba(167, 139, 250, 0.18);
+  --link: #38bdf8;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: "Inter", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2c2c33; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+/* 玻璃态卡片：带极淡的高光层，与 ink 色调融合。 */
+.glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.005));
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+}
+
+.fade-in { animation: fadeIn 200ms ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+/* 紫蓝主按钮（与 logo 的渐变色一致）。 */
+.btn-primary {
+  background-image: linear-gradient(135deg, #a78bfa 0%, #38bdf8 100%);
+  color: #0b0b10;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  padding: 0.6rem 1rem;
+  transition: filter 120ms, transform 120ms;
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-primary:active:not(:disabled) { transform: translateY(1px); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--fg-2);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.95rem;
+  transition: background 120ms, color 120ms;
+}
+.btn-ghost:hover { background: var(--bg-3); color: var(--fg); }
+
+.input {
+  background: var(--bg-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.8rem;
+  font: inherit;
+  width: 100%;
+  outline: none;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(167,139,250,0.18);
+}
+
+label.field { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; color: var(--fg-2); }
+label.field > span { font-weight: 500; color: var(--fg); }
+
+.alert-error {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.pulse-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* xterm 适配：让终端内边距吃容器自身的 padding，不是 xterm 默认的 0。 */
+.xterm .xterm-viewport { background-color: transparent !important; }
+.xterm .xterm-screen   { padding: 0 !important; }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * AI MCP 活动动效
+ * ────────────────────────────────────────────────────────────────────── */
+
+/* 活动条整体淡入 + 上滑 */
+.mcp-active-bar {
+  animation: mcpBarIn 320ms cubic-bezier(.2, .7, .2, 1);
+  background:
+    linear-gradient(135deg, rgba(167, 139, 250, 0.10) 0%, rgba(56, 189, 248, 0.08) 100%),
+    radial-gradient(120% 200% at 0% 0%, rgba(167, 139, 250, 0.18) 0%, transparent 50%);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  position: relative;
+  overflow: hidden;
+}
+.mcp-active-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 0%, transparent 35%,
+    rgba(196, 181, 253, 0.18) 50%,
+    transparent 65%, transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: mcpBarShimmer 2.4s linear infinite;
+}
+@keyframes mcpBarIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes mcpBarShimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* 活动条左侧的"运行环"：双层环 + 脉冲 */
+.mcp-pulse {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.mcp-pulse::before,
+.mcp-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1.5px solid rgba(167, 139, 250, 0.7);
+}
+.mcp-pulse::before { animation: mcpRipple 1.6s ease-out infinite; }
+.mcp-pulse::after  { animation: mcpRipple 1.6s ease-out infinite 0.8s; }
+.mcp-pulse > .core {
+  position: absolute;
+  inset: 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #c4b5fd 0%, #a78bfa 50%, #38bdf8 100%);
+  box-shadow: 0 0 16px rgba(167, 139, 250, 0.6);
+  animation: mcpCore 1.3s ease-in-out infinite alternate;
+}
+@keyframes mcpRipple {
+  0%   { transform: scale(0.5); opacity: 0.85; }
+  100% { transform: scale(1.4); opacity: 0;   }
+}
+@keyframes mcpCore {
+  from { box-shadow: 0 0 12px rgba(167, 139, 250, 0.5); }
+  to   { box-shadow: 0 0 22px rgba(56, 189, 248, 0.8); }
+}
+
+/* 工具名"打字机"扫描线 */
+.mcp-tool-name {
+  background: linear-gradient(90deg, #c4b5fd 0%, #a78bfa 50%, #38bdf8 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font-weight: 600;
+}
+
+/* 历史时间线条目滑入 */
+.mcp-history-item {
+  animation: mcpItemIn 280ms cubic-bezier(.2, .7, .2, 1);
+}
+@keyframes mcpItemIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 完成态打钩闪一下 */
+.mcp-flash-ok {
+  animation: mcpFlashOk 1.4s ease-out;
+}
+@keyframes mcpFlashOk {
+  0%   { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0); }
+  20%  { box-shadow: 0 0 0 4px rgba(110, 231, 183, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(110, 231, 183, 0); }
+}
+.mcp-flash-err {
+  animation: mcpFlashErr 1.6s ease-out;
+}
+@keyframes mcpFlashErr {
+  0%   { box-shadow: 0 0 0 0 rgba(252, 165, 165, 0); }
+  20%  { box-shadow: 0 0 0 4px rgba(252, 165, 165, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(252, 165, 165, 0); }
+}
+
+/* 活动指示器（顶部 nav 旁的小灯） */
+.mcp-nav-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.15) 0%, rgba(56, 189, 248, 0.10) 100%);
+  border: 1px solid rgba(167, 139, 250, 0.4);
+  color: #c4b5fd;
+  animation: mcpNavBlink 1.6s ease-in-out infinite;
+}
+@keyframes mcpNavBlink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.mcp-nav-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #a78bfa 0%, #38bdf8 100%);
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.7);
+}

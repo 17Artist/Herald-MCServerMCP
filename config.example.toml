@@ -1,0 +1,47 @@
+# Herald-MCServerMCP 配置示例。
+# 复制本文件为 ./config.toml 后按需修改，再 `cargo run -p herald-mcserver`。
+# 任何字段都给了默认值，所以未填写的小节会用内置默认。
+
+[server]
+# HTTP 监听地址。生产建议加反代（nginx / caddy）做 HTTPS。
+listen     = "0.0.0.0:8787"
+# 仅用于面板里显示"复制 URL"。不影响路由。
+public_url = "http://localhost:8787"
+# 外网 IP 或域名。MCP 工具会把它返回给 AI，方便 AI 告诉用户"用什么地址连 MC 服务器"。
+# 留空则从 public_url 推断 host。
+public_host = ""
+# 数据目录。空字符串 → 平台默认（详见 README）。
+data_dir   = "./data"
+
+[mc]
+default_version = "1.21.4"
+heap_mb         = 4096
+# MC 游戏端口。每次启动 Paper 都会写入 server.properties。
+server_port     = 25565
+# 留空则由"环境管家"启动 server 时自动选/下载（S2 启用）。
+java_path       = ""
+# 留空则启动前随机生成并写 server.properties。
+rcon_password   = ""
+rcon_port       = 25575
+
+[runtime]
+# 检测不到合适的 Java 时是否自动下载（Adoptium Temurin）。
+auto_install_java  = true
+# 自动下载指定版本的 PaperMC jar。
+auto_install_paper = true
+# 镜像源：default | tuna | bmclapi | <自定义 base url>
+mirror             = "default"
+
+[security]
+# session 有效期（秒）。30 天 = 2592000。
+session_ttl_secs = 2592000
+# 是否允许 owner 之外的用户 /signup 自助注册。默认 false（仅邀请制）。
+allow_signup     = false
+# 反向代理 IP 段（CIDR 列表，逗号分隔）。配上之后才读 X-Forwarded-For。
+trusted_proxy    = ""
+
+[mcp]
+# /mcp 端点是否启用。
+enabled         = true
+# 调用 MCP 工具是否要 API Key（强烈建议保持 true）。
+require_api_key = true
