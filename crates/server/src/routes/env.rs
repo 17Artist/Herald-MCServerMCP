@@ -63,10 +63,10 @@ pub async fn install_java(
     _user: SessionUser,
     Json(req): Json<InstallJavaReq>,
 ) -> Result<Json<TaskIdResp>, ApiError> {
-    if !(8..=24).contains(&req.major) {
+    if !(8..=26).contains(&req.major) {
         return Err(ApiError::bad_request(
             "invalid_major",
-            "Java major 必须在 [8, 24] 区间",
+            "Java major 必须在 [8, 26] 区间",
         ));
     }
     let id = s.server.runtime().install_java(req.major);

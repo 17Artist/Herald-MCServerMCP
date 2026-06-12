@@ -6,17 +6,18 @@
 
 /// 给定 MC 版本号字符串（"1.20.4"、"1.21"、"26.1.2" 等），返回最低要求的 Java major。
 ///
-/// 解析失败 / 未知版本 → 返回最高已知值（21）。
+/// 解析失败 / 未知版本 → 返回最高已知值（25）。
 pub fn required_java_major(mc_version: &str) -> u32 {
-    // 新版本号格式（26.x.x）：Mojang 2026 年起改用年号制，全部需要 Java 21+。
+    // 新版本号格式（26.x.x）：MC 2026 年起改用年号制。
+    // Paper 26.1.2 编译目标是 class file 69.0 = Java 25。
     if !mc_version.starts_with("1.") {
-        return 21;
+        return 25;
     }
 
     let parsed = parse_mc_version(mc_version);
     let (_major, minor, patch) = match parsed {
         Some(t) => t,
-        None => return 21,
+        None => return 25,
     };
 
     match (minor, patch) {
@@ -67,8 +68,10 @@ mod tests {
     }
     #[test]
     fn unknown_falls_back_to_max() {
+        // 1.99.0 以 "1." 开头走旧解析，minor=99 ≥21 → Java 21
         assert_eq!(required_java_major("1.99.0"), 21);
-        assert_eq!(required_java_major("garbage"), 21);
+        // 非 "1." 开头的未知字串 → 走新版本分支 → Java 25
+        assert_eq!(required_java_major("garbage"), 25);
     }
     #[test]
     fn snapshot_prefix_handled() {
@@ -76,9 +79,9 @@ mod tests {
     }
     #[test]
     fn new_version_scheme_26x() {
-        assert_eq!(required_java_major("26.1"), 21);
-        assert_eq!(required_java_major("26.1.2"), 21);
-        assert_eq!(required_java_major("26.2"), 21);
-        assert_eq!(required_java_major("27.0.1"), 21);
+        assert_eq!(required_java_major("26.1"), 25);
+        assert_eq!(required_java_major("26.1.2"), 25);
+        assert_eq!(required_java_major("26.2"), 25);
+        assert_eq!(required_java_major("27.0.1"), 25);
     }
 }

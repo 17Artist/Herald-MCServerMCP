@@ -101,7 +101,7 @@ pub fn tool_list_json() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "major": { "type": "integer", "minimum": 8, "maximum": 24, "description": "Java major（如 21）" }
+                    "major": { "type": "integer", "minimum": 8, "maximum": 26, "description": "Java major（如 21、25）" }
                 },
                 "required": ["major"],
                 "additionalProperties": false
@@ -380,9 +380,9 @@ async fn env_install_java(state: &AppState, args: &Value) -> Result<Value, Dispa
         .get("major")
         .and_then(|v| v.as_u64())
         .ok_or_else(|| DispatchError::invalid_params("major 必填且为整数"))?;
-    if !(8..=24).contains(&major) {
+    if !(8..=26).contains(&major) {
         return Err(DispatchError::invalid_params(
-            "major 取值必须在 [8, 24]",
+            "major 取值必须在 [8, 26]",
         ));
     }
     let id = state.server.runtime().install_java(major as u32);
