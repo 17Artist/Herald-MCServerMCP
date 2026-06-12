@@ -10,7 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.75+-orange?logo=rust" alt="Rust 1.75+" />
-  <img src="https://img.shields.io/badge/paper-1.16~1.21.x-green?logo=minecraft" alt="Paper" />
+  <img src="https://img.shields.io/badge/paper-1.8~1.21.11-green?logo=minecraft" alt="Paper" />
   <img src="https://img.shields.io/badge/MCP-2024--11--05-blue" alt="MCP Protocol" />
   <img src="https://img.shields.io/badge/license-GPL--3.0-purple" alt="License" />
 </p>
