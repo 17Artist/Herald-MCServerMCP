@@ -36,6 +36,10 @@ pub enum ToolName {
     FilesList,
     FilesRead,
     FilesWrite,
+    FilesReadLines,
+    FilesWriteLines,
+    FilesMkdir,
+    FilesDelete,
 
     RconExec,
 }
@@ -62,6 +66,10 @@ impl ToolName {
             "mc_files_list"         => Self::FilesList,
             "mc_files_read"         => Self::FilesRead,
             "mc_files_write"        => Self::FilesWrite,
+            "mc_files_read_lines"   => Self::FilesReadLines,
+            "mc_files_write_lines"  => Self::FilesWriteLines,
+            "mc_files_mkdir"        => Self::FilesMkdir,
+            "mc_files_delete"       => Self::FilesDelete,
 
             "mc_rcon_exec"          => Self::RconExec,
 
@@ -82,6 +90,9 @@ impl ToolName {
                 | Self::PluginUpload
                 | Self::PluginRemove
                 | Self::FilesWrite
+                | Self::FilesWriteLines
+                | Self::FilesMkdir
+                | Self::FilesDelete
                 | Self::RconExec
         )
     }
@@ -257,6 +268,55 @@ pub fn tool_list_json() -> Value {
                 "additionalProperties": false
             }
         },
+        {
+            "name": "mc_files_read_lines",
+            "description": "读文件的指定行范围。适合大文件只看一段（如日志、长配置）。行号从 1 开始。不指定 end 则读到文件末尾。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path":  { "type": "string", "description": "相对路径" },
+                    "start": { "type": "integer", "minimum": 1, "description": "起始行号（含）" },
+                    "end":   { "type": "integer", "minimum": 1, "description": "结束行号（含），不填则到末尾" }
+                },
+                "required": ["path", "start"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "mc_files_write_lines",
+            "description": "替换文件中指定行范围的内容。行号从 1 开始。start~end 范围被 new_content 替换（可以是不同行数，实现插入/删除/替换）。文件不存在时创建。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path":        { "type": "string", "description": "相对路径" },
+                    "start":       { "type": "integer", "minimum": 1, "description": "起始行号（含）" },
+                    "end":         { "type": "integer", "minimum": 1, "description": "结束行号（含）" },
+                    "new_content": { "type": "string", "description": "替换进去的文本（可含多行）" }
+                },
+                "required": ["path", "start", "end", "new_content"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "mc_files_mkdir",
+            "description": "创建目录（含中间目录）。用于在上传插件前预建 plugins/XXX/。",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "相对目录路径" } },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "mc_files_delete",
+            "description": "删除一个文件。不支持删目录（防误删世界）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "相对文件路径" } },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        },
 
         {
             "name": "mc_rcon_exec",
@@ -296,6 +356,10 @@ pub async fn call_tool(
         ToolName::FilesList => files_list(&state, &args).await,
         ToolName::FilesRead => files_read(&state, &args).await,
         ToolName::FilesWrite => files_write(&state, &args).await,
+        ToolName::FilesReadLines => files_read_lines(&state, &args).await,
+        ToolName::FilesWriteLines => files_write_lines(&state, &args).await,
+        ToolName::FilesMkdir => files_mkdir(&state, &args).await,
+        ToolName::FilesDelete => files_delete(&state, &args).await,
 
         ToolName::RconExec => rcon_exec(&state, &args).await,
     }
@@ -800,6 +864,129 @@ async fn files_write(state: &AppState, args: &Value) -> Result<Value, DispatchEr
         "content": text_content(format!("已写入 {path}（{} 字节）", content.len())),
         "path": path,
         "size": content.len(),
+    }))
+}
+
+async fn files_read_lines(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
+    let path = require_str(args, "path")?;
+    let start = args.get("start").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+    let end = args.get("end").and_then(|v| v.as_u64()).map(|v| v as usize);
+
+    let abs = sandbox::resolve(state.server.work_dir(), path)
+        .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?;
+    if !abs.exists() {
+        return Err(DispatchError::tool(format!("文件不存在: {path}")));
+    }
+    let meta = tokio::fs::metadata(&abs).await.map_err(|e| DispatchError::internal(e.to_string()))?;
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(DispatchError::tool(format!("文件超过 {} KiB 上限", MAX_FILE_BYTES / 1024)));
+    }
+    let full = tokio::fs::read_to_string(&abs)
+        .await
+        .map_err(|e| DispatchError::tool(format!("不是 UTF-8: {e}")))?;
+    let all_lines: Vec<&str> = full.lines().collect();
+    let total = all_lines.len();
+    let s = start.max(1) - 1; // 转 0-based
+    let e = end.unwrap_or(total).min(total);
+    if s >= total {
+        return Ok(json!({
+            "content": text_content(format!("文件共 {total} 行，start={start} 超出范围")),
+            "path": path,
+            "total_lines": total,
+            "lines": "",
+        }));
+    }
+    let slice = &all_lines[s..e];
+    let text = slice.join("\n");
+    Ok(json!({
+        "content": text_content(text.clone()),
+        "path": path,
+        "start": s + 1,
+        "end": e,
+        "total_lines": total,
+        "lines": text,
+    }))
+}
+
+async fn files_write_lines(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
+    let path = require_str(args, "path")?;
+    let start = args.get("start").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+    let end = args.get("end").and_then(|v| v.as_u64()).unwrap_or(start as u64) as usize;
+    let new_content = require_str(args, "new_content")?;
+
+    let work_dir = state.server.work_dir();
+    let abs = sandbox::resolve(work_dir, path)
+        .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?;
+
+    // 读原文件（不存在则当空文件）
+    let original = if abs.exists() {
+        tokio::fs::read_to_string(&abs)
+            .await
+            .map_err(|e| DispatchError::tool(format!("不是 UTF-8: {e}")))?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<&str> = original.lines().collect();
+    let total = lines.len();
+
+    // 转 0-based，clamp
+    let s = (start.max(1) - 1).min(total);
+    let e = end.min(total);
+    if s > e {
+        return Err(DispatchError::invalid_params("start 不能大于 end"));
+    }
+
+    // 替换 [s..e] 为 new_content 的行
+    let new_lines: Vec<&str> = new_content.lines().collect();
+    lines.splice(s..e, new_lines.iter().copied());
+
+    let result = lines.join("\n");
+    if result.len() as u64 > MAX_FILE_BYTES {
+        return Err(DispatchError::tool(format!("结果超过 {} KiB 上限", MAX_FILE_BYTES / 1024)));
+    }
+    // 自动创建父目录
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| DispatchError::internal(e.to_string()))?;
+    }
+    tokio::fs::write(&abs, &result).await.map_err(|e| DispatchError::tool(e.to_string()))?;
+
+    let new_total = result.lines().count();
+    Ok(json!({
+        "content": text_content(format!(
+            "已替换 {path} 第 {start}~{end} 行 → {} 行新内容（共 {new_total} 行）",
+            new_content.lines().count()
+        )),
+        "path": path,
+        "total_lines": new_total,
+    }))
+}
+
+async fn files_mkdir(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
+    let path = require_str(args, "path")?;
+    let abs = sandbox::resolve(state.server.work_dir(), path)
+        .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?;
+    tokio::fs::create_dir_all(&abs).await.map_err(|e| DispatchError::tool(e.to_string()))?;
+    Ok(json!({
+        "content": text_content(format!("已创建目录 {path}")),
+        "path": path,
+    }))
+}
+
+async fn files_delete(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
+    let path = require_str(args, "path")?;
+    let abs = sandbox::resolve(state.server.work_dir(), path)
+        .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?;
+    if !abs.exists() {
+        return Err(DispatchError::tool(format!("文件不存在: {path}")));
+    }
+    if abs.is_dir() {
+        return Err(DispatchError::tool("不支持删目录（防误删世界），请用具体文件路径"));
+    }
+    tokio::fs::remove_file(&abs).await.map_err(|e| DispatchError::tool(e.to_string()))?;
+    Ok(json!({
+        "content": text_content(format!("已删除 {path}")),
+        "path": path,
     }))
 }
 
