@@ -225,26 +225,32 @@ pub fn tool_list_json() -> Value {
 
         {
             "name": "mc_files_list",
-            "description": "列出可读写的白名单配置文件（server.properties / ops.json / whitelist.json / banned-* / paper-* / bukkit.yml / spigot.yml）。每个文件返回 path/exists/size。",
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+            "description": "列出 work_dir 下指定目录的文件和子目录。默认列根目录。返回 path/is_dir/size。可用于浏览 plugins/XXX/config.yml 等任意文件。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "default": ".", "description": "相对于 work_dir 的目录路径" }
+                },
+                "additionalProperties": false
+            }
         },
         {
             "name": "mc_files_read",
-            "description": "读一个白名单文件（UTF-8 文本，≤1 MiB）。文件不存在时返回 exists=false / content=空。",
+            "description": "读 work_dir 内任意文件（UTF-8 文本，≤2 MiB）。路径相对于服务端工作区，sandbox 防越界。文件不存在时返回 exists=false / content=空。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "path": { "type": "string" } },
+                "properties": { "path": { "type": "string", "description": "相对路径，如 plugins/MyPlugin/config.yml" } },
                 "required": ["path"],
                 "additionalProperties": false
             }
         },
         {
             "name": "mc_files_write",
-            "description": "写一个白名单文件。修改服务端口/RCON/世界名等需要重启 Paper 才生效。",
+            "description": "写 work_dir 内任意文件（≤2 MiB UTF-8）。父目录不存在时自动创建。路径 sandbox 防越界。修改服务端口/RCON/世界名等配置需重启 Paper 才生效。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path":    { "type": "string" },
+                    "path":    { "type": "string", "description": "相对路径" },
                     "content": { "type": "string" }
                 },
                 "required": ["path", "content"],
@@ -287,7 +293,7 @@ pub async fn call_tool(
         ToolName::PluginUpload => plugin_upload(&state, &args).await,
         ToolName::PluginRemove => plugin_remove(&state, &args).await,
 
-        ToolName::FilesList => files_list(&state).await,
+        ToolName::FilesList => files_list(&state, &args).await,
         ToolName::FilesRead => files_read(&state, &args).await,
         ToolName::FilesWrite => files_write(&state, &args).await,
 
@@ -687,51 +693,54 @@ async fn plugin_upload(state: &AppState, args: &Value) -> Result<Value, Dispatch
 
 // ---- files ------------------------------------------------------------------
 
-const FILES_WHITELIST: &[&str] = &[
-    "server.properties",
-    "ops.json",
-    "whitelist.json",
-    "banned-players.json",
-    "banned-ips.json",
-    "bukkit.yml",
-    "spigot.yml",
-    "paper-global.yml",
-    "paper-world-defaults.yml",
-];
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
-const MAX_FILE_BYTES: u64 = 1024 * 1024;
-
-fn ensure_in_whitelist(path: &str) -> Result<(), DispatchError> {
-    let normalized = path.replace('\\', "/");
-    if !FILES_WHITELIST.iter().any(|p| *p == normalized) {
-        return Err(DispatchError::forbidden(format!(
-            "仅允许操作白名单文件：{}",
-            FILES_WHITELIST.join(" / ")
-        )));
-    }
-    Ok(())
-}
-
-async fn files_list(state: &AppState) -> Result<Value, DispatchError> {
+async fn files_list(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
     let work_dir = state.server.work_dir();
-    let mut out: Vec<Value> = Vec::new();
-    for p in FILES_WHITELIST {
-        let abs = work_dir.join(p);
-        let (exists, size) = match tokio::fs::metadata(&abs).await {
-            Ok(m) => (true, m.len()),
-            Err(_) => (false, 0),
-        };
-        out.push(json!({ "path": p, "exists": exists, "size": size }));
+    let dir_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    let target = if dir_path == "." || dir_path.is_empty() {
+        work_dir.to_path_buf()
+    } else {
+        sandbox::resolve(work_dir, dir_path)
+            .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?
+    };
+    if !target.exists() || !target.is_dir() {
+        return Ok(json!({
+            "content": text_content(format!("目录不存在: {dir_path}")),
+            "entries": [],
+        }));
     }
+    let mut entries: Vec<Value> = Vec::new();
+    let mut rd = tokio::fs::read_dir(&target)
+        .await
+        .map_err(|e| DispatchError::internal(e.to_string()))?;
+    while let Some(e) = rd
+        .next_entry()
+        .await
+        .map_err(|e| DispatchError::internal(e.to_string()))?
+    {
+        let meta = e.metadata().await.map_err(|e| DispatchError::internal(e.to_string()))?;
+        let name = e.file_name().to_string_lossy().to_string();
+        let rel = if dir_path == "." || dir_path.is_empty() {
+            name
+        } else {
+            format!("{}/{}", dir_path.trim_end_matches('/'), name)
+        };
+        entries.push(json!({
+            "path": rel,
+            "is_dir": meta.is_dir(),
+            "size": if meta.is_file() { meta.len() } else { 0 },
+        }));
+    }
+    let summary = format!("{} 下共 {} 项", dir_path, entries.len());
     Ok(json!({
-        "content": text_content(format!("共 {} 个白名单文件", FILES_WHITELIST.len())),
-        "entries": out,
+        "content": text_content(summary),
+        "entries": entries,
     }))
 }
 
 async fn files_read(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
     let path = require_str(args, "path")?;
-    ensure_in_whitelist(path)?;
     let abs = sandbox::resolve(state.server.work_dir(), path)
         .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?;
     if !abs.exists() {
@@ -745,6 +754,9 @@ async fn files_read(state: &AppState, args: &Value) -> Result<Value, DispatchErr
     let meta = tokio::fs::metadata(&abs)
         .await
         .map_err(|e| DispatchError::internal(e.to_string()))?;
+    if meta.is_dir() {
+        return Err(DispatchError::invalid_params("目标是目录，请用 mc_files_list"));
+    }
     if meta.len() > MAX_FILE_BYTES {
         return Err(DispatchError::tool(format!(
             "文件超过 {} KiB 上限",
@@ -766,7 +778,6 @@ async fn files_read(state: &AppState, args: &Value) -> Result<Value, DispatchErr
 async fn files_write(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
     let path = require_str(args, "path")?;
     let content = require_str(args, "content")?;
-    ensure_in_whitelist(path)?;
     if content.len() as u64 > MAX_FILE_BYTES {
         return Err(DispatchError::invalid_params(format!(
             "写入内容超过 {} KiB 上限",
@@ -774,11 +785,14 @@ async fn files_write(state: &AppState, args: &Value) -> Result<Value, DispatchEr
         )));
     }
     let work_dir = state.server.work_dir();
-    tokio::fs::create_dir_all(work_dir)
-        .await
-        .map_err(|e| DispatchError::internal(e.to_string()))?;
     let abs = sandbox::resolve(work_dir, path)
         .map_err(|e| DispatchError::invalid_params(format!("路径不合法: {e}")))?;
+    // 自动创建父目录
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DispatchError::internal(e.to_string()))?;
+    }
     tokio::fs::write(&abs, content)
         .await
         .map_err(|e| DispatchError::tool(e.to_string()))?;

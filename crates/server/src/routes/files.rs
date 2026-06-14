@@ -1,14 +1,10 @@
-//! `/api/files/*` —— 服务端工作区配置文件的安全读写。
+//! `/api/files/*` —— 服务端工作区文件的安全读写。
 //!
 //! 设计：
-//!   * 只允许操作白名单内的相对路径（避免做"全文件树编辑器"，那是 S5+）
-//!   * 文本类，UTF-8，单文件大小限制 1 MiB（对 server.properties / json 都够用）
+//!   * 路径必须在 work_dir 沙箱内（sandbox canonicalize 防越界）
+//!   * 文本类，UTF-8，单文件大小限制 2 MiB
 //!   * 读取时如果文件不存在返回 200 + empty —— 让前端能直接打开"还没生成过"的文件做编辑
-//!
-//! 当前白名单（足够覆盖 S3 调试需要）：
-//!   server.properties / ops.json / whitelist.json / banned-players.json / banned-ips.json
-//!
-//! S5 会接更宽松的"任意 plugins/<name>/config.yml"——那时再扩。
+//!   * 支持列出指定目录下的文件（默认列根目录）
 
 use axum::{extract::Extension, Json};
 use serde::{Deserialize, Serialize};
@@ -20,59 +16,58 @@ use crate::{
     util::sandbox,
 };
 
-const MAX_FILE_BYTES: u64 = 1024 * 1024; // 1 MiB
-
-const ALLOWED: &[&str] = &[
-    "server.properties",
-    "ops.json",
-    "whitelist.json",
-    "banned-players.json",
-    "banned-ips.json",
-    "bukkit.yml",
-    "spigot.yml",
-    "paper-global.yml",
-    "paper-world-defaults.yml",
-];
-
-fn ensure_allowed(path: &str) -> Result<(), ApiError> {
-    let normalized = path.replace('\\', "/");
-    if !ALLOWED.iter().any(|p| *p == normalized) {
-        return Err(ApiError::forbidden(
-            "not_in_whitelist",
-            format!(
-                "仅允许编辑：{}",
-                ALLOWED.join(" / ")
-            ),
-        ));
-    }
-    Ok(())
-}
+const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
 
 #[derive(Serialize)]
 pub struct FileEntry {
     pub path: String,
-    pub exists: bool,
+    pub is_dir: bool,
     pub size: u64,
 }
+
+#[derive(Deserialize)]
+pub struct ListQ {
+    /// 相对于 work_dir 的目录路径，默认 "."（根）。
+    #[serde(default = "default_list_path")]
+    pub path: String,
+}
+fn default_list_path() -> String { ".".into() }
 
 pub async fn list(
     Extension(s): Extension<AppState>,
     _user: SessionUser,
+    axum::extract::Query(q): axum::extract::Query<ListQ>,
 ) -> Result<Json<Vec<FileEntry>>, ApiError> {
     let work_dir = s.server.work_dir();
+    let target = if q.path == "." || q.path.is_empty() {
+        work_dir.to_path_buf()
+    } else {
+        sandbox::resolve(work_dir, &q.path)?
+    };
+    if !target.exists() || !target.is_dir() {
+        return Ok(Json(Vec::new()));
+    }
     let mut out = Vec::new();
-    for p in ALLOWED {
-        let abs = work_dir.join(p);
-        let (exists, size) = match tokio::fs::metadata(&abs).await {
-            Ok(m) => (true, m.len()),
-            Err(_) => (false, 0),
+    let mut rd = tokio::fs::read_dir(&target).await?;
+    while let Some(e) = rd.next_entry().await? {
+        let meta = e.metadata().await?;
+        let name = e.file_name().to_string_lossy().to_string();
+        // 构造相对路径
+        let rel = if q.path == "." || q.path.is_empty() {
+            name
+        } else {
+            format!("{}/{}", q.path.trim_end_matches('/'), name)
         };
         out.push(FileEntry {
-            path: (*p).into(),
-            exists,
-            size,
+            path: rel,
+            is_dir: meta.is_dir(),
+            size: if meta.is_file() { meta.len() } else { 0 },
         });
     }
+    out.sort_by(|a, b| {
+        // 目录排前面
+        b.is_dir.cmp(&a.is_dir).then(a.path.to_lowercase().cmp(&b.path.to_lowercase()))
+    });
     Ok(Json(out))
 }
 
@@ -94,8 +89,8 @@ pub async fn read(
     _user: SessionUser,
     axum::extract::Query(q): axum::extract::Query<ReadQ>,
 ) -> Result<Json<ReadResp>, ApiError> {
-    ensure_allowed(&q.path)?;
-    let abs = sandbox::resolve(s.server.work_dir(), &q.path)?;
+    let work_dir = s.server.work_dir();
+    let abs = sandbox::resolve(work_dir, &q.path)?;
     if !abs.exists() {
         return Ok(Json(ReadResp {
             path: q.path,
@@ -105,6 +100,9 @@ pub async fn read(
         }));
     }
     let meta = tokio::fs::metadata(&abs).await?;
+    if meta.is_dir() {
+        return Err(ApiError::bad_request("is_directory", "目标是目录，不是文件"));
+    }
     if meta.len() > MAX_FILE_BYTES {
         return Err(ApiError::bad_request(
             "too_large",
@@ -133,7 +131,6 @@ pub async fn write(
     _user: SessionUser,
     Json(req): Json<WriteReq>,
 ) -> Result<Json<ReadResp>, ApiError> {
-    ensure_allowed(&req.path)?;
     if req.content.len() as u64 > MAX_FILE_BYTES {
         return Err(ApiError::bad_request(
             "too_large",
@@ -141,8 +138,11 @@ pub async fn write(
         ));
     }
     let work_dir = s.server.work_dir();
-    tokio::fs::create_dir_all(work_dir).await?;
     let abs = sandbox::resolve(work_dir, &req.path)?;
+    // 自动创建父目录
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
     tokio::fs::write(&abs, &req.content).await?;
     let size = req.content.len() as u64;
     Ok(Json(ReadResp {
