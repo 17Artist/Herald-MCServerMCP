@@ -279,31 +279,45 @@ impl ServerInstance {
                 });
         });
 
-        // 等 ready
-        let wait = Duration::from_secs(opts.wait_ready_secs);
-        match tokio::time::timeout(wait, ready_rx.recv()).await {
-            Ok(Ok(())) => {
-                self.set_status(ServerStatus::Running, Some(pid));
-                Ok(self.snapshot())
-            }
-            _ => {
-                tracing::warn!(
-                    "paper ready 超时（{}s）—— 强制终止进程并恢复状态",
-                    opts.wait_ready_secs
-                );
-                // 超时 → 强杀进程，翻回 Stopped，释放 world 锁
-                proc.kill().await;
-                {
-                    let mut g = self.inner.state.write();
-                    g.process = None;
-                    g.rcon = None;
-                    g.status = ServerStatus::Stopped;
+        // 等 ready（wait_ready_secs=0 表示不限时等待）
+        if opts.wait_ready_secs == 0 {
+            // 无限等待模式
+            match ready_rx.recv().await {
+                Ok(()) => {
+                    self.set_status(ServerStatus::Running, Some(pid));
+                    Ok(self.snapshot())
                 }
-                let _ = self.inner.event_tx.send(ServerEvent::StatusChange {
-                    status: ServerStatus::Stopped,
-                    pid: None,
-                });
-                Err(StartError::ReadyTimeout(opts.wait_ready_secs))
+                _ => {
+                    // 进程退出了但没收到 ready —— 启动失败
+                    self.set_status(ServerStatus::Stopped, None);
+                    Err(StartError::Spawn(anyhow::anyhow!("进程退出但未到达 Ready 状态")))
+                }
+            }
+        } else {
+            let wait = Duration::from_secs(opts.wait_ready_secs);
+            match tokio::time::timeout(wait, ready_rx.recv()).await {
+                Ok(Ok(())) => {
+                    self.set_status(ServerStatus::Running, Some(pid));
+                    Ok(self.snapshot())
+                }
+                _ => {
+                    tracing::warn!(
+                        "paper ready 超时（{}s）—— 强制终止进程并恢复状态",
+                        opts.wait_ready_secs
+                    );
+                    proc.kill().await;
+                    {
+                        let mut g = self.inner.state.write();
+                        g.process = None;
+                        g.rcon = None;
+                        g.status = ServerStatus::Stopped;
+                    }
+                    let _ = self.inner.event_tx.send(ServerEvent::StatusChange {
+                        status: ServerStatus::Stopped,
+                        pid: None,
+                    });
+                    Err(StartError::ReadyTimeout(opts.wait_ready_secs))
+                }
             }
         }
     }
