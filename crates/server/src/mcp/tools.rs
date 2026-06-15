@@ -30,6 +30,7 @@ pub enum ToolName {
     ServerExec,
 
     PluginList,
+    PluginUploadInfo,
     PluginRemove,
 
     FilesList,
@@ -59,6 +60,7 @@ impl ToolName {
             "mc_server_exec"        => Self::ServerExec,
 
             "mc_plugin_list"        => Self::PluginList,
+            "mc_plugin_upload_info" => Self::PluginUploadInfo,
             "mc_plugin_remove"      => Self::PluginRemove,
 
             "mc_files_list"         => Self::FilesList,
@@ -203,7 +205,12 @@ pub fn tool_list_json() -> Value {
 
         {
             "name": "mc_plugin_list",
-            "description": "列出 plugins/ 下所有 .jar / .jar.disabled 文件（filename/size/modified_ts）。上传插件请用 HTTP multipart：POST <server>/api/plugins/upload，header 带 Authorization: Bearer <同一把key>，body multipart file=@xxx.jar&replace=true。",
+            "description": "列出 plugins/ 下所有 .jar / .jar.disabled 文件（filename/size/modified_ts）。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        },
+        {
+            "name": "mc_plugin_upload_info",
+            "description": "获取插件上传的 URL、鉴权头和用法说明。插件上传走 HTTP multipart（不走 MCP JSON-RPC），调此工具拿到完整的 curl 命令模板。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
@@ -333,6 +340,7 @@ pub async fn call_tool(
         ToolName::ServerExec => server_exec(&state, &args).await,
 
         ToolName::PluginList => plugin_list(&state).await,
+        ToolName::PluginUploadInfo => plugin_upload_info(&state).await,
         ToolName::PluginRemove => plugin_remove(&state, &args).await,
 
         ToolName::FilesList => files_list(&state, &args).await,
@@ -697,6 +705,48 @@ async fn plugin_remove(state: &AppState, args: &Value) -> Result<Value, Dispatch
         .map_err(|e| DispatchError::tool(e.to_string()))?;
     Ok(json!({
         "content": text_content(format!("已删除 {name}")),
+    }))
+}
+
+async fn plugin_upload_info(state: &AppState) -> Result<Value, DispatchError> {
+    let base = if !state.config.server.public_url.is_empty() {
+        state.config.server.public_url.trim_end_matches('/').to_string()
+    } else {
+        format!("http://{}", state.config.server.listen)
+    };
+    let upload_url = format!("{base}/api/plugins/upload");
+
+    let usage = format!(
+        "插件上传走 HTTP multipart（不走 MCP JSON-RPC）。\n\
+         \n\
+         URL:    POST {upload_url}\n\
+         Header: Authorization: Bearer <你当前使用的同一把 API Key>\n\
+         Body:   multipart/form-data\n\
+         Fields:\n\
+         - file: .jar 文件（必填）\n\
+         - replace: true/false（同名是否覆盖，默认 false）\n\
+         \n\
+         curl 示例：\n\
+         curl -X POST \\\n\
+           -H \"Authorization: Bearer <your_key>\" \\\n\
+           -F \"file=@MyPlugin.jar\" \\\n\
+           -F \"replace=true\" \\\n\
+           {upload_url}\n\
+         \n\
+         校验：ZIP magic + 必须含 plugin.yml 或 paper-plugin.yml。\n\
+         上传后需 mc_server_restart 才加载。"
+    );
+
+    Ok(json!({
+        "content": text_content(usage),
+        "upload_url": upload_url,
+        "method": "POST",
+        "content_type": "multipart/form-data",
+        "auth": "Bearer <同一把 API Key>",
+        "fields": {
+            "file": ".jar 文件（必填）",
+            "replace": "true/false（可选，默认 false）"
+        },
     }))
 }
 
