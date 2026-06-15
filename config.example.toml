@@ -19,7 +19,7 @@ heap_mb         = 4096
 # MC 游戏端口。每次启动 Paper 都会写入 server.properties。
 server_port     = 25565
 # 留空则由"环境管家"启动 server 时自动选/下载（S2 启用）。
-java_path       = ""
+java_path       = "C:\\Program Files\\Java\\jdk-17\\bin\\java.exe"
 # 留空则启动前随机生成并写 server.properties。
 rcon_password   = ""
 rcon_port       = 25575

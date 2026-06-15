@@ -130,6 +130,14 @@ fn build_start_options(
     s: &AppState,
     req: StartReq,
 ) -> herald_mcserver_mcserver::StartOptions {
+    let java_path = {
+        let p = s.config.mc.java_path.trim();
+        if p.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(p))
+        }
+    };
     herald_mcserver_mcserver::StartOptions {
         mc_version: req
             .mc_version
@@ -142,6 +150,7 @@ fn build_start_options(
             if pw.is_empty() { None } else { Some(pw) }
         }),
         wait_ready_secs: req.wait_ready_secs.unwrap_or(120),
+        java_path,
     }
 }
 

@@ -112,6 +112,8 @@ pub struct StartOptions {
     pub rcon_port: Option<u16>,
     pub rcon_password: Option<String>,
     pub wait_ready_secs: u64,
+    /// 显式指定 java 路径（来自 config.mc.java_path）。非空则跳过自动探测。
+    pub java_path: Option<std::path::PathBuf>,
 }
 
 impl ServerInstance {
@@ -195,14 +197,30 @@ impl ServerInstance {
             .runtime
             .check_environment(&opts.mc_version)
             .map_err(StartError::Spawn)?;
-        let java = match chk.java {
-            Some(j) => j,
-            None => {
-                return Err(StartError::EnvMissing {
-                    need_java_major: chk.need_java_major,
-                    have_java: None,
-                    paper_cached: chk.paper.is_some(),
-                });
+
+        // Java 选取：config 显式指定 > 自动探测
+        let java = if let Some(ref explicit) = opts.java_path {
+            if !explicit.exists() {
+                return Err(StartError::Spawn(anyhow::anyhow!(
+                    "config.mc.java_path 指定的 {} 不存在",
+                    explicit.display()
+                )));
+            }
+            crate::process::inspect_java(explicit)
+                .ok_or_else(|| StartError::Spawn(anyhow::anyhow!(
+                    "无法识别 {} 的 Java 版本",
+                    explicit.display()
+                )))?
+        } else {
+            match chk.java {
+                Some(j) => j,
+                None => {
+                    return Err(StartError::EnvMissing {
+                        need_java_major: chk.need_java_major,
+                        have_java: None,
+                        paper_cached: chk.paper.is_some(),
+                    });
+                }
             }
         };
         let paper = match chk.paper {

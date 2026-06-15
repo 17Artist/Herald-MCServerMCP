@@ -533,6 +533,10 @@ async fn server_start_or_restart(
             if pw.is_empty() { None } else { Some(pw) }
         },
         wait_ready_secs,
+        java_path: {
+            let p = state.config.mc.java_path.trim();
+            if p.is_empty() { None } else { Some(std::path::PathBuf::from(p)) }
+        },
     };
 
     let result = if restart {

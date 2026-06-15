@@ -67,8 +67,24 @@ impl ServerProcess {
     }
 
     pub async fn kill(&self) {
+        // 先尝试 tokio 的 Child::kill
         if let Some(mut c) = self.child.lock().await.take() {
             let _ = c.kill().await;
+            let _ = c.wait().await; // 等真正退出
+            return;
+        }
+        // Child 已被 take 但进程可能还活——用 OS 级强杀
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &self.pid.to_string()])
+                .output();
+        }
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &self.pid.to_string()])
+                .output();
         }
     }
 
@@ -111,12 +127,21 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     )
     .await?;
 
-    let mut cmd = Command::new(opts.java);
+    // 通过 cmd /c 包装启动 JVM，解决 Windows 上 tokio spawn 子进程时
+    // JLine/Jansi 原生库因 console 环境差异导致的插件 crash 问题。
+    // cmd.exe 作为中间人提供了正确的 console 环境。
+    let jar_path = opts.jar.to_string_lossy().replace('/', "\\");
+    let java_path = opts.java.to_string_lossy().replace('/', "\\");
+    let cmd_line = format!(
+        "\"{java_path}\" -Xmx{}M -Xms{}M -Djline.terminal=dumb -Djansi.passthrough=true -jar \"{jar_path}\" nogui",
+        opts.heap_mb,
+        opts.heap_mb.min(1024),
+    );
+
+    let mut cmd = Command::new("cmd");
     cmd.current_dir(opts.work_dir)
-        .arg(format!("-Xmx{}M", opts.heap_mb))
-        .arg(format!("-Xms{}M", opts.heap_mb.min(1024)))
-        .arg("-jar")
-        .arg(opts.jar)
+        .arg("/c")
+        .raw_arg(&cmd_line)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -124,22 +149,28 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
 
     let mut child = cmd.spawn()?;
     let pid = child.id().unwrap_or(0);
-    let mut stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("missing stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing stdout"))?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("missing stderr"))?;
 
     let started_at = now_secs();
 
-    // stdin 写入泵
+    // stdin 写入泵（stdin=null 时不可用，send_stdin 会报错）
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
-    tokio::spawn(async move {
-        while let Some(s) = stdin_rx.recv().await {
-            if stdin.write_all(s.as_bytes()).await.is_err() {
-                break;
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::spawn(async move {
+            while let Some(s) = stdin_rx.recv().await {
+                if stdin.write_all(s.as_bytes()).await.is_err() {
+                    break;
+                }
+                let _ = stdin.flush().await;
             }
-            let _ = stdin.flush().await;
-        }
-    });
+        });
+    } else {
+        // stdin=null，启动一个空的 drain 任务避免 sender 报错
+        tokio::spawn(async move {
+            while stdin_rx.recv().await.is_some() {}
+        });
+    }
 
     // ready 信号
     let (ready_tx, ready_rx) = broadcast::channel::<()>(2);
@@ -280,4 +311,9 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// 对外暴露 java 检测（给 instance 的 java_path 覆盖逻辑用）。
+pub fn inspect_java(path: &std::path::Path) -> Option<herald_mcserver_runtime::JavaInfo> {
+    herald_mcserver_runtime::java_probe::inspect(path, "config")
 }
