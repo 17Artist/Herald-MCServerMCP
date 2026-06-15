@@ -30,8 +30,6 @@ pub enum ToolName {
     ServerExec,
 
     PluginList,
-    PluginUpload,
-    PluginUploadChunk,
     PluginRemove,
 
     FilesList,
@@ -61,8 +59,6 @@ impl ToolName {
             "mc_server_exec"        => Self::ServerExec,
 
             "mc_plugin_list"        => Self::PluginList,
-            "mc_plugin_upload"      => Self::PluginUpload,
-            "mc_plugin_upload_chunk" => Self::PluginUploadChunk,
             "mc_plugin_remove"      => Self::PluginRemove,
 
             "mc_files_list"         => Self::FilesList,
@@ -89,8 +85,6 @@ impl ToolName {
                 | Self::ServerStop
                 | Self::ServerRestart
                 | Self::ServerExec
-                | Self::PluginUpload
-                | Self::PluginUploadChunk
                 | Self::PluginRemove
                 | Self::FilesWrite
                 | Self::FilesWriteLines
@@ -209,38 +203,8 @@ pub fn tool_list_json() -> Value {
 
         {
             "name": "mc_plugin_list",
-            "description": "列出 plugins/ 下所有 .jar / .jar.disabled 文件（filename/size/modified_ts）。",
+            "description": "列出 plugins/ 下所有 .jar / .jar.disabled 文件（filename/size/modified_ts）。上传插件请用 HTTP multipart：POST <server>/api/plugins/upload，header 带 Authorization: Bearer <同一把key>，body multipart file=@xxx.jar&replace=true。",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
-        },
-        {
-            "name": "mc_plugin_upload",
-            "description": "上传小插件 jar（base64，≤10 MiB 推荐）。大文件请改用 HTTP multipart：POST {mcp_url}/../api/plugins/upload，header 带 Authorization: Bearer <key>，body 为 multipart/form-data file=@xxx.jar&replace=true。服务端做 ZIP + plugin.yml 校验。上传后需 mc_server_restart 生效。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "filename": { "type": "string", "description": "目标文件名（如 EssentialsX.jar），须以 .jar 结尾" },
-                    "content_b64": { "type": "string", "description": "jar 文件的 base64 标准编码（不含前缀）" },
-                    "replace": { "type": "boolean", "default": false, "description": "同名文件已存在时是否覆盖" }
-                },
-                "required": ["filename", "content_b64"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "mc_plugin_upload_chunk",
-            "description": "分块上传大插件 jar。流程：1) init（创建上传会话）→ 2) 多次 append（追加 base64 分块）→ 3) finish（校验+组装）。每块建议 2~4 MiB base64。最终文件上限 64 MiB。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["init", "append", "finish"], "description": "init=开始/append=追加块/finish=完成校验" },
-                    "filename": { "type": "string", "description": "目标文件名（init 时必填）" },
-                    "upload_id": { "type": "string", "description": "init 返回的会话 ID（append/finish 时必填）" },
-                    "chunk_b64": { "type": "string", "description": "base64 编码的分块数据（append 时必填）" },
-                    "replace": { "type": "boolean", "default": false, "description": "finish 时同名覆盖" }
-                },
-                "required": ["action"],
-                "additionalProperties": false
-            }
         },
         {
             "name": "mc_plugin_remove",
@@ -369,8 +333,6 @@ pub async fn call_tool(
         ToolName::ServerExec => server_exec(&state, &args).await,
 
         ToolName::PluginList => plugin_list(&state).await,
-        ToolName::PluginUpload => plugin_upload(&state, &args).await,
-        ToolName::PluginUploadChunk => plugin_upload_chunk(&state, &args).await,
         ToolName::PluginRemove => plugin_remove(&state, &args).await,
 
         ToolName::FilesList => files_list(&state, &args).await,
@@ -736,149 +698,6 @@ async fn plugin_remove(state: &AppState, args: &Value) -> Result<Value, Dispatch
     Ok(json!({
         "content": text_content(format!("已删除 {name}")),
     }))
-}
-
-async fn plugin_upload(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
-    let filename = require_str(args, "filename")?;
-    let content_b64 = require_str(args, "content_b64")?;
-    let replace = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    // 防 DoS：先验 base64 字符串长度，再解码
-    const MAX_B64_LEN: usize = 90 * 1024 * 1024;
-    if content_b64.len() > MAX_B64_LEN {
-        return Err(DispatchError::invalid_params(format!(
-            "content_b64 过长（{} MiB），上限 ~88 MiB（对应 64 MiB 原文）",
-            content_b64.len() / 1024 / 1024
-        )));
-    }
-
-    use base64::Engine;
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(content_b64.as_bytes())
-        .map_err(|e| DispatchError::invalid_params(format!("base64 解码失败: {e}")))?;
-
-    let plugins_dir = state.server.work_dir().join("plugins");
-    let resp =
-        crate::routes::plugins::install_plugin_bytes_sync(&plugins_dir, filename, &data, replace)
-            .map_err(|e| DispatchError::tool(format!("{}: {}", e.code, e.message)))?;
-
-    Ok(json!({
-        "content": text_content(format!(
-            "已上传 {} ({} bytes, replaced={}). 需要 mc_server_restart 后生效。",
-            resp.filename, resp.size, resp.replaced
-        )),
-        "filename": resp.filename,
-        "size": resp.size,
-        "replaced": resp.replaced,
-    }))
-}
-
-async fn plugin_upload_chunk(state: &AppState, args: &Value) -> Result<Value, DispatchError> {
-    let action = require_str(args, "action")?;
-
-    match action {
-        "init" => {
-            let filename = require_str(args, "filename")?;
-            // 校验文件名合法性
-            crate::util::sandbox::validate_jar_filename(filename)
-                .map_err(|e| DispatchError::invalid_params(format!("文件名不合法: {e}")))?;
-
-            let upload_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-            let session = crate::state::ChunkUploadSession {
-                filename: filename.to_string(),
-                chunks: Vec::new(),
-                created_at: std::time::Instant::now(),
-            };
-            {
-                let mut map = state.chunk_uploads.lock().unwrap();
-                // 清理超 10 分钟的旧会话
-                map.retain(|_, s| s.created_at.elapsed().as_secs() < 600);
-                map.insert(upload_id.clone(), session);
-            }
-            Ok(json!({
-                "content": text_content(format!("上传会话已创建 upload_id={upload_id}，可开始 append 分块")),
-                "upload_id": upload_id,
-                "filename": filename,
-            }))
-        }
-        "append" => {
-            let upload_id = require_str(args, "upload_id")?;
-            let chunk_b64 = require_str(args, "chunk_b64")?;
-
-            // 单块上限 6 MiB base64（≈4.5 MiB 原文）
-            if chunk_b64.len() > 6 * 1024 * 1024 {
-                return Err(DispatchError::invalid_params(
-                    "单块 chunk_b64 过大（上限 6 MiB）",
-                ));
-            }
-
-            use base64::Engine;
-            let chunk = base64::engine::general_purpose::STANDARD
-                .decode(chunk_b64.as_bytes())
-                .map_err(|e| DispatchError::invalid_params(format!("base64 解码失败: {e}")))?;
-
-            let (total_bytes, chunk_count) = {
-                let mut map = state.chunk_uploads.lock().unwrap();
-                let session = map
-                    .get_mut(upload_id)
-                    .ok_or_else(|| DispatchError::tool("upload_id 不存在或已过期"))?;
-
-                // 总大小不能超 64 MiB
-                let current_total: usize = session.chunks.iter().map(|c| c.len()).sum();
-                if current_total + chunk.len() > 64 * 1024 * 1024 {
-                    return Err(DispatchError::tool("累计数据超过 64 MiB 上限"));
-                }
-                session.chunks.push(chunk);
-                let total = current_total + session.chunks.last().unwrap().len();
-                (total, session.chunks.len())
-            };
-
-            Ok(json!({
-                "content": text_content(format!(
-                    "已追加第 {chunk_count} 块，累计 {:.1} MiB",
-                    total_bytes as f64 / 1024.0 / 1024.0
-                )),
-                "upload_id": upload_id,
-                "chunk_index": chunk_count,
-                "total_bytes": total_bytes,
-            }))
-        }
-        "finish" => {
-            let upload_id = require_str(args, "upload_id")?;
-            let replace = args.get("replace").and_then(|v| v.as_bool()).unwrap_or(false);
-
-            let (filename, data) = {
-                let mut map = state.chunk_uploads.lock().unwrap();
-                let session = map
-                    .remove(upload_id)
-                    .ok_or_else(|| DispatchError::tool("upload_id 不存在或已过期"))?;
-                let mut assembled = Vec::new();
-                for chunk in session.chunks {
-                    assembled.extend_from_slice(&chunk);
-                }
-                (session.filename, assembled)
-            };
-
-            let plugins_dir = state.server.work_dir().join("plugins");
-            let resp = crate::routes::plugins::install_plugin_bytes_sync(
-                &plugins_dir, &filename, &data, replace,
-            )
-            .map_err(|e| DispatchError::tool(format!("{}: {}", e.code, e.message)))?;
-
-            Ok(json!({
-                "content": text_content(format!(
-                    "分块上传完成：{} ({} bytes, replaced={}). 需要 mc_server_restart 后生效。",
-                    resp.filename, resp.size, resp.replaced
-                )),
-                "filename": resp.filename,
-                "size": resp.size,
-                "replaced": resp.replaced,
-            }))
-        }
-        _ => Err(DispatchError::invalid_params(
-            "action 必须是 init / append / finish",
-        )),
-    }
 }
 
 // ---- files ------------------------------------------------------------------

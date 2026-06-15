@@ -637,7 +637,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "base64",
  "futures",
  "herald-mcserver-auth",
  "herald-mcserver-core",
