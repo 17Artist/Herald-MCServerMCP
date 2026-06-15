@@ -127,39 +127,17 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     )
     .await?;
 
-    // 平台差异处理：
-    // - Windows：用 cmd /c wrapper 解决 tokio spawn 时 JLine/Jansi 原生库 crash
-    // - Linux/macOS：直接 spawn java（无此问题）
-    #[cfg(windows)]
-    let mut cmd = {
-        let jar_path = opts.jar.to_string_lossy().replace('/', "\\");
-        let java_path = opts.java.to_string_lossy().replace('/', "\\");
-        let cmd_line = format!(
-            "\"{java_path}\" -Xmx{}M -Xms{}M -Djline.terminal=dumb -Djansi.passthrough=true -jar \"{jar_path}\" nogui",
-            opts.heap_mb,
-            opts.heap_mb.min(1024),
-        );
-        let mut c = Command::new("cmd");
-        c.current_dir(opts.work_dir)
-            .arg("/c")
-            .raw_arg(&cmd_line);
-        c
-    };
-
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new(opts.java);
-        c.current_dir(opts.work_dir)
-            .arg(format!("-Xmx{}M", opts.heap_mb))
-            .arg(format!("-Xms{}M", opts.heap_mb.min(1024)))
-            .arg("-Djline.terminal=dumb")
-            .arg("-jar")
-            .arg(opts.jar)
-            .arg("nogui");
-        c
-    };
-
-    cmd.stdin(Stdio::piped())
+    // 直接 spawn java，所有平台统一。
+    // 加 -Djline.terminal=dumb 避免 JLine 在 piped 环境下的兼容问题。
+    let mut cmd = Command::new(opts.java);
+    cmd.current_dir(opts.work_dir)
+        .arg(format!("-Xmx{}M", opts.heap_mb))
+        .arg(format!("-Xms{}M", opts.heap_mb.min(1024)))
+        .arg("-Djline.terminal=dumb")
+        .arg("-jar")
+        .arg(opts.jar)
+        .arg("nogui")
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
