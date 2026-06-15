@@ -3,8 +3,9 @@
 //! 在 axum 0.7 里我们用 `Extension(state)` 而非 `with_state`（可以混着用，但
 //! `Extension` 在嵌套 router 里跟 trait extractor 配合更稳）。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use herald_mcserver_auth::AuthStore;
 use herald_mcserver_core::Config;
@@ -13,6 +14,13 @@ use herald_mcserver_runtime::{Mirror, Runtime, TaskTracker};
 
 use crate::mcp::ActivityBus;
 use crate::util::rate_limit::RateLimiter;
+
+/// 分块上传会话。
+pub struct ChunkUploadSession {
+    pub filename: String,
+    pub chunks: Vec<Vec<u8>>,
+    pub created_at: std::time::Instant,
+}
 
 /// 内层。永远走 `AppState = Arc<AppStateInner>`。
 pub struct AppStateInner {
@@ -31,6 +39,8 @@ pub struct AppStateInner {
     pub mcp_activity: ActivityBus,
     /// 速率限制（防暴力登录 / 防 MCP 失控刷）。
     pub rate_limit: Arc<RateLimiter>,
+    /// 分块上传会话（upload_id → session）。10 分钟无操作自动清理。
+    pub chunk_uploads: Arc<StdMutex<HashMap<String, ChunkUploadSession>>>,
 }
 
 pub type AppState = Arc<AppStateInner>;
@@ -60,6 +70,7 @@ impl AppStateInner {
             server,
             mcp_activity: ActivityBus::new(),
             rate_limit: Arc::new(RateLimiter::new()),
+            chunk_uploads: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 
