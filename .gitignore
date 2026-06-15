@@ -26,3 +26,5 @@ dist/
 
 # Local logs
 *.log
+mcs.cookie
+*.jar

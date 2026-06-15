@@ -287,7 +287,22 @@ impl ServerInstance {
                 Ok(self.snapshot())
             }
             _ => {
-                tracing::warn!("paper ready 超时（{}s）—— 进程仍在运行，但状态保留 Starting", opts.wait_ready_secs);
+                tracing::warn!(
+                    "paper ready 超时（{}s）—— 强制终止进程并恢复状态",
+                    opts.wait_ready_secs
+                );
+                // 超时 → 强杀进程，翻回 Stopped，释放 world 锁
+                proc.kill().await;
+                {
+                    let mut g = self.inner.state.write();
+                    g.process = None;
+                    g.rcon = None;
+                    g.status = ServerStatus::Stopped;
+                }
+                let _ = self.inner.event_tx.send(ServerEvent::StatusChange {
+                    status: ServerStatus::Stopped,
+                    pid: None,
+                });
                 Err(StartError::ReadyTimeout(opts.wait_ready_secs))
             }
         }

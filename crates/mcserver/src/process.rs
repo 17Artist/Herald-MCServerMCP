@@ -115,8 +115,6 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     cmd.current_dir(opts.work_dir)
         .arg(format!("-Xmx{}M", opts.heap_mb))
         .arg(format!("-Xms{}M", opts.heap_mb.min(1024)))
-        .arg("-XX:+UnlockExperimentalVMOptions")
-        .arg("-XX:+UseG1GC")
         .arg("-jar")
         .arg(opts.jar)
         .arg("nogui")
