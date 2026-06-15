@@ -182,9 +182,11 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     // ready 信号
     let (ready_tx, ready_rx) = broadcast::channel::<()>(2);
 
-    // 日志轮询：从 logs/latest.log 文件尾部读取新行
+    // 日志轮询 + RCON 端口 ready 检测
+    let rcon_port = opts.rcon_port.unwrap_or(25575);
     spawn_log_file_poller(
         log_file,
+        rcon_port,
         opts.event_tx.clone(),
         opts.log_ring.clone(),
         Some(ready_tx),
@@ -239,15 +241,31 @@ fn spawn_log_pump(
     });
 }
 
-/// 轮询 logs/latest.log + 检测 RCON 端口可达作为 ready 信号。
+/// 轮询检测 ready：尝试 TCP 连接 RCON 端口。连通即 ready。
+/// 同时持续读 logs/latest.log 填充日志环（best effort，读不到也不影响 ready）。
 fn spawn_log_file_poller(
     log_file: std::path::PathBuf,
+    rcon_port: u16,
     event_tx: broadcast::Sender<ServerEvent>,
     log_ring: Arc<RwLock<Vec<LogLine>>>,
     ready_tx: Option<broadcast::Sender<()>>,
 ) {
+    // RCON 端口 ready 检测（独立任务）
+    if let Some(tx) = ready_tx {
+        tokio::spawn(async move {
+            let addr = format!("127.0.0.1:{rcon_port}");
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        });
+    }
+
+    // 日志文件轮询（best effort，填充日志环 + WebSocket 推送）
     tokio::spawn(async move {
-        // 等文件出现
         for _ in 0..120 {
             if log_file.exists() {
                 break;
@@ -256,22 +274,23 @@ fn spawn_log_file_poller(
         }
 
         let mut last_line_count: usize = 0;
-        let mut ready_sent = false;
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-            // 读全文件
             let log_file_clone = log_file.clone();
             let content = match tokio::task::spawn_blocking(move || {
                 std::fs::read_to_string(&log_file_clone)
-            }).await {
+            })
+            .await
+            {
                 Ok(Ok(c)) => c,
                 _ => continue,
             };
 
             let lines: Vec<&str> = content.lines().collect();
-            if lines.len() <= last_line_count {
+            let current_count = lines.len();
+            if current_count <= last_line_count {
                 continue;
             }
 
@@ -287,15 +306,6 @@ fn spawn_log_file_poller(
                     text,
                 };
 
-                if !ready_sent {
-                    if let Some(tx) = &ready_tx {
-                        if line.text.contains("For help, type") || line.text.contains("Done (") {
-                            let _ = tx.send(());
-                            ready_sent = true;
-                        }
-                    }
-                }
-
                 {
                     let mut g = log_ring.write();
                     g.push(line.clone());
@@ -308,7 +318,7 @@ fn spawn_log_file_poller(
                 let _ = event_tx.send(ServerEvent::Log { line });
             }
 
-            last_line_count = lines.len();
+            last_line_count = current_count;
         }
     });
 }
