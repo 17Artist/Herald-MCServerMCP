@@ -89,11 +89,22 @@ impl ServerProcess {
     }
 
     pub async fn wait(&self) -> Option<std::process::ExitStatus> {
-        let mut g = self.child.lock().await;
-        if let Some(c) = g.as_mut() {
-            c.wait().await.ok()
-        } else {
-            None
+        // stdout=inherit 模式下 tokio child.wait() 可能立即返回。
+        // 改用 PID 轮询检测进程是否真的退出。
+        loop {
+            {
+                let mut g = self.child.lock().await;
+                if let Some(c) = g.as_mut() {
+                    match c.try_wait() {
+                        Ok(Some(status)) => return Some(status),
+                        Ok(None) => {} // 还在跑
+                        Err(_) => return None,
+                    }
+                } else {
+                    return None;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 }
@@ -127,8 +138,9 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     )
     .await?;
 
-    // 直接 spawn java，所有平台统一。
-    // 加 -Djline.terminal=dumb 避免 JLine 在 piped 环境下的兼容问题。
+    // 直接 spawn java，stdout/stderr 不 pipe（Stdio::inherit），
+    // 避免某些插件（如 Blink/Symphony）在 piped stdout 环境下 crash。
+    // 日志改从 Paper 的 logs/latest.log 文件轮询读取。
     let mut cmd = Command::new(opts.java);
     cmd.current_dir(opts.work_dir)
         .arg(format!("-Xmx{}M", opts.heap_mb))
@@ -138,18 +150,19 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
         .arg(opts.jar)
         .arg("nogui")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true);
 
     let mut child = cmd.spawn()?;
     let pid = child.id().unwrap_or(0);
-    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("missing stdout"))?;
-    let stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("missing stderr"))?;
+
+    // stdout/stderr 不再 pipe，改用日志文件轮询
+    let log_file = opts.work_dir.join("logs").join("latest.log");
 
     let started_at = now_secs();
 
-    // stdin 写入泵（stdin=null 时不可用，send_stdin 会报错）
+    // stdin 写入泵
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
     if let Some(mut stdin) = child.stdin.take() {
         tokio::spawn(async move {
@@ -161,7 +174,6 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
             }
         });
     } else {
-        // stdin=null，启动一个空的 drain 任务避免 sender 报错
         tokio::spawn(async move {
             while stdin_rx.recv().await.is_some() {}
         });
@@ -170,19 +182,12 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     // ready 信号
     let (ready_tx, ready_rx) = broadcast::channel::<()>(2);
 
-    spawn_log_pump(
-        BufReader::new(stdout).lines(),
-        false,
+    // 日志轮询：从 logs/latest.log 文件尾部读取新行
+    spawn_log_file_poller(
+        log_file,
         opts.event_tx.clone(),
         opts.log_ring.clone(),
-        Some(ready_tx.clone()),
-    );
-    spawn_log_pump(
-        BufReader::new(stderr).lines(),
-        true,
-        opts.event_tx.clone(),
-        opts.log_ring.clone(),
-        None,
+        Some(ready_tx),
     );
 
     Ok((
@@ -214,14 +219,12 @@ fn spawn_log_pump(
                 text: raw,
             };
 
-            // ready 信号（"Done (3.123s)! For help, type ..."）
             if let Some(tx) = &ready_tx {
                 if line.text.contains("For help, type") {
                     let _ = tx.send(());
                 }
             }
 
-            // 写环
             {
                 let mut g = log_ring.write();
                 g.push(line.clone());
@@ -232,6 +235,80 @@ fn spawn_log_pump(
             }
 
             let _ = event_tx.send(ServerEvent::Log { line });
+        }
+    });
+}
+
+/// 轮询 logs/latest.log + 检测 RCON 端口可达作为 ready 信号。
+fn spawn_log_file_poller(
+    log_file: std::path::PathBuf,
+    event_tx: broadcast::Sender<ServerEvent>,
+    log_ring: Arc<RwLock<Vec<LogLine>>>,
+    ready_tx: Option<broadcast::Sender<()>>,
+) {
+    tokio::spawn(async move {
+        // 等文件出现
+        for _ in 0..120 {
+            if log_file.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        let mut last_line_count: usize = 0;
+        let mut ready_sent = false;
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            // 读全文件
+            let log_file_clone = log_file.clone();
+            let content = match tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&log_file_clone)
+            }).await {
+                Ok(Ok(c)) => c,
+                _ => continue,
+            };
+
+            let lines: Vec<&str> = content.lines().collect();
+            if lines.len() <= last_line_count {
+                continue;
+            }
+
+            for text in &lines[last_line_count..] {
+                let text = text.to_string();
+                if text.is_empty() {
+                    continue;
+                }
+
+                let line = LogLine {
+                    ts: now_millis(),
+                    stream: "stdout",
+                    text,
+                };
+
+                if !ready_sent {
+                    if let Some(tx) = &ready_tx {
+                        if line.text.contains("For help, type") || line.text.contains("Done (") {
+                            let _ = tx.send(());
+                            ready_sent = true;
+                        }
+                    }
+                }
+
+                {
+                    let mut g = log_ring.write();
+                    g.push(line.clone());
+                    if g.len() > 5000 {
+                        let drop_n = g.len() - 4000;
+                        g.drain(0..drop_n);
+                    }
+                }
+
+                let _ = event_tx.send(ServerEvent::Log { line });
+            }
+
+            last_line_count = lines.len();
         }
     });
 }
