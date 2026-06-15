@@ -117,7 +117,6 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
         .arg(format!("-Xms{}M", opts.heap_mb.min(1024)))
         .arg("-jar")
         .arg(opts.jar)
-        .arg("nogui")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
