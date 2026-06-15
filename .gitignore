@@ -28,3 +28,5 @@ dist/
 *.log
 mcs.cookie
 *.jar
+t.cookie
+test-config.toml
