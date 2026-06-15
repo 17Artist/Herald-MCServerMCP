@@ -315,7 +315,7 @@ fn initialize_result() -> Value {
             "name": "herald-mcserver",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": "Minecraft 插件调试沙盒：可用工具组 env_*/server_*/plugin_*/files_*/rcon_*。先调 mc_env_probe 看 Java/Paper 状态；缺则触发 mc_env_install_*；齐了直接 mc_server_start 启动。",
+        "instructions": "Minecraft 插件调试沙盒。可用工具组 env_*/server_*/plugin_*/files_*/rcon_*。先调 mc_env_probe 看环境；缺则触发 install_*；齐了 mc_server_start。插件上传：小文件用 mc_plugin_upload(base64)；大文件(>10MB)直接 POST /api/plugins/upload multipart，header 带同一把 Bearer key。",
     })
 }
 

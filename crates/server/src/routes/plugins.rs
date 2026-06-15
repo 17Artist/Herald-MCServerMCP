@@ -24,7 +24,7 @@ use serde::Serialize;
 
 use crate::{
     error::ApiError,
-    middleware::auth::SessionUser,
+    middleware::auth::AuthUser,
     state::AppState,
     util::sandbox::{self, validate_jar_filename},
 };
@@ -104,7 +104,7 @@ pub fn install_plugin_bytes_sync(
 
 pub async fn list(
     Extension(s): Extension<AppState>,
-    _user: SessionUser,
+    _user: AuthUser,
 ) -> Result<Json<ListResp>, ApiError> {
     let plugins_dir = s.server.work_dir().join("plugins");
     let mut entries = Vec::new();
@@ -146,7 +146,7 @@ pub async fn list(
 
 pub async fn upload(
     Extension(s): Extension<AppState>,
-    _user: SessionUser,
+    _user: AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResp>), ApiError> {
     let mut filename: Option<String> = None;
@@ -198,7 +198,7 @@ pub async fn upload(
 
 pub async fn remove(
     Extension(s): Extension<AppState>,
-    _user: SessionUser,
+    _user: AuthUser,
     Path(filename): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let plugins_dir = s.server.work_dir().join("plugins");

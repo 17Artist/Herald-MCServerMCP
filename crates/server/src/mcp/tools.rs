@@ -214,7 +214,7 @@ pub fn tool_list_json() -> Value {
         },
         {
             "name": "mc_plugin_upload",
-            "description": "一次性上传小插件 jar（base64 编码，≤10 MiB 推荐）。大文件请用 mc_plugin_upload_chunk 分块。服务端做 ZIP 校验 + plugin.yml 探测。上传后需 mc_server_restart 生效。",
+            "description": "上传小插件 jar（base64，≤10 MiB 推荐）。大文件请改用 HTTP multipart：POST {mcp_url}/../api/plugins/upload，header 带 Authorization: Bearer <key>，body 为 multipart/form-data file=@xxx.jar&replace=true。服务端做 ZIP + plugin.yml 校验。上传后需 mc_server_restart 生效。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
