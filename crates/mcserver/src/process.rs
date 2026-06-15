@@ -127,22 +127,39 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
     )
     .await?;
 
-    // 通过 cmd /c 包装启动 JVM，解决 Windows 上 tokio spawn 子进程时
-    // JLine/Jansi 原生库因 console 环境差异导致的插件 crash 问题。
-    // cmd.exe 作为中间人提供了正确的 console 环境。
-    let jar_path = opts.jar.to_string_lossy().replace('/', "\\");
-    let java_path = opts.java.to_string_lossy().replace('/', "\\");
-    let cmd_line = format!(
-        "\"{java_path}\" -Xmx{}M -Xms{}M -Djline.terminal=dumb -Djansi.passthrough=true -jar \"{jar_path}\" nogui",
-        opts.heap_mb,
-        opts.heap_mb.min(1024),
-    );
+    // 平台差异处理：
+    // - Windows：用 cmd /c wrapper 解决 tokio spawn 时 JLine/Jansi 原生库 crash
+    // - Linux/macOS：直接 spawn java（无此问题）
+    #[cfg(windows)]
+    let mut cmd = {
+        let jar_path = opts.jar.to_string_lossy().replace('/', "\\");
+        let java_path = opts.java.to_string_lossy().replace('/', "\\");
+        let cmd_line = format!(
+            "\"{java_path}\" -Xmx{}M -Xms{}M -Djline.terminal=dumb -Djansi.passthrough=true -jar \"{jar_path}\" nogui",
+            opts.heap_mb,
+            opts.heap_mb.min(1024),
+        );
+        let mut c = Command::new("cmd");
+        c.current_dir(opts.work_dir)
+            .arg("/c")
+            .raw_arg(&cmd_line);
+        c
+    };
 
-    let mut cmd = Command::new("cmd");
-    cmd.current_dir(opts.work_dir)
-        .arg("/c")
-        .raw_arg(&cmd_line)
-        .stdin(Stdio::piped())
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new(opts.java);
+        c.current_dir(opts.work_dir)
+            .arg(format!("-Xmx{}M", opts.heap_mb))
+            .arg(format!("-Xms{}M", opts.heap_mb.min(1024)))
+            .arg("-Djline.terminal=dumb")
+            .arg("-jar")
+            .arg(opts.jar)
+            .arg("nogui");
+        c
+    };
+
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);

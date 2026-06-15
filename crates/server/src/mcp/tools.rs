@@ -521,7 +521,7 @@ async fn server_start_or_restart(
         .map(|s| s.to_string())
         .unwrap_or_else(|| state.config.mc.default_version.clone());
     let heap_mb = opt_u64(args, "heap_mb").unwrap_or(state.config.mc.heap_mb as u64) as u32;
-    let wait_ready_secs = opt_u64(args, "wait_ready_secs").unwrap_or(120);
+    let wait_ready_secs = opt_u64(args, "wait_ready_secs").unwrap_or(0);
 
     let opts = herald_mcserver_mcserver::StartOptions {
         mc_version,

@@ -149,7 +149,7 @@ fn build_start_options(
             let pw = s.config.mc.rcon_password.clone();
             if pw.is_empty() { None } else { Some(pw) }
         }),
-        wait_ready_secs: req.wait_ready_secs.unwrap_or(120),
+        wait_ready_secs: req.wait_ready_secs.unwrap_or(0),
         java_path,
     }
 }
