@@ -234,6 +234,12 @@ impl ServerInstance {
             }
         };
 
+        // 清空上一轮的日志环
+        {
+            let mut g = self.inner.log_ring.write();
+            g.clear();
+        }
+
         self.set_status(ServerStatus::Starting, None);
 
         // RCON 配置：默认 25575；密码空则自动随机一份并记录到 instance 上。

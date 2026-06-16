@@ -273,7 +273,12 @@ fn spawn_log_file_poller(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        let mut last_line_count: usize = 0;
+        // 记录启动时文件已有的行数作为 offset，只读之后新增的
+        let initial_lines = match std::fs::read_to_string(&log_file) {
+            Ok(c) => c.lines().count(),
+            Err(_) => 0,
+        };
+        let mut last_line_count: usize = initial_lines;
 
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
