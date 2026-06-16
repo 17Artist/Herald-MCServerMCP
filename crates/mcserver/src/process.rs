@@ -126,7 +126,7 @@ pub struct SpawnOptions<'a> {
 
 /// 启动 Paper。返回 (process, ready_rx)。ready_rx 在看到 "Done (...)! For help, type \"help\""
 /// 时收到一次信号，调用方据此决定 starting → running 转换。
-pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, broadcast::Receiver<()>)> {
+pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, broadcast::Receiver<()>, tokio::task::AbortHandle)> {
     use std::process::Stdio;
 
     tokio::fs::create_dir_all(opts.work_dir).await?;
@@ -184,7 +184,7 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
 
     // 日志轮询 + RCON 端口 ready 检测
     let rcon_port = opts.rcon_port.unwrap_or(25575);
-    spawn_log_file_poller(
+    let poller_abort = spawn_log_file_poller(
         log_file,
         rcon_port,
         opts.event_tx.clone(),
@@ -203,6 +203,7 @@ pub async fn spawn(opts: SpawnOptions<'_>) -> anyhow::Result<(ServerProcess, bro
             log_ring: opts.log_ring,
         },
         ready_rx,
+        poller_abort,
     ))
 }
 
@@ -249,7 +250,7 @@ fn spawn_log_file_poller(
     event_tx: broadcast::Sender<ServerEvent>,
     log_ring: Arc<RwLock<Vec<LogLine>>>,
     ready_tx: Option<broadcast::Sender<()>>,
-) {
+) -> tokio::task::AbortHandle {
     // RCON 端口 ready 检测（独立任务）
     if let Some(tx) = ready_tx {
         tokio::spawn(async move {
@@ -265,7 +266,7 @@ fn spawn_log_file_poller(
     }
 
     // 日志文件轮询（用字节偏移跟踪，避免 Windows 文件锁导致 read_to_string 读不到新内容）
-    tokio::spawn(async move {
+    let poller_handle = tokio::spawn(async move {
         for _ in 0..120 {
             if log_file.exists() {
                 break;
@@ -337,6 +338,7 @@ fn spawn_log_file_poller(
             }
         }
     });
+    poller_handle.abort_handle()
 }
 
 async fn write_initial_files(

@@ -95,6 +95,8 @@ struct State {
     process: Option<Arc<ServerProcess>>,
     /// 当前实例的 RCON 连接信息（启动时填，停时清）。
     rcon: Option<RconEndpoint>,
+    /// 日志 poller 的 abort handle（重启时取消旧任务）。
+    log_poller_handle: Option<tokio::task::AbortHandle>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +129,7 @@ impl ServerInstance {
                     status: ServerStatus::Stopped,
                     process: None,
                     rcon: None,
+                    log_poller_handle: None,
                 }),
                 event_tx: tx,
                 log_ring: Arc::new(RwLock::new(Vec::new())),
@@ -234,6 +237,14 @@ impl ServerInstance {
             }
         };
 
+        // 取消旧的日志 poller（防止重启后多个 poller 同时跑导致日志重复）
+        {
+            let mut g = self.inner.state.write();
+            if let Some(h) = g.log_poller_handle.take() {
+                h.abort();
+            }
+        }
+
         // 清空上一轮的日志环
         {
             let mut g = self.inner.log_ring.write();
@@ -262,7 +273,7 @@ impl ServerInstance {
             log_ring: self.inner.log_ring.clone(),
         };
 
-        let (proc, mut ready_rx) = match spawn(spawn_opts).await {
+        let (proc, mut ready_rx, poller_abort) = match spawn(spawn_opts).await {
             Ok(t) => t,
             Err(e) => {
                 self.set_status(ServerStatus::Stopped, None);
@@ -280,6 +291,7 @@ impl ServerInstance {
                 port: rcon_port,
                 password: rcon_password,
             });
+            g.log_poller_handle = Some(poller_abort);
         }
 
         // 后台 watcher：等子进程退出 → 切回 Stopped
