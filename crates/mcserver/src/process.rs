@@ -264,7 +264,7 @@ fn spawn_log_file_poller(
         });
     }
 
-    // 日志文件轮询（best effort，填充日志环 + WebSocket 推送）
+    // 日志文件轮询（用字节偏移跟踪，避免 Windows 文件锁导致 read_to_string 读不到新内容）
     tokio::spawn(async move {
         for _ in 0..120 {
             if log_file.exists() {
@@ -273,33 +273,46 @@ fn spawn_log_file_poller(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        // 记录启动时文件已有的行数作为 offset，只读之后新增的
-        let initial_lines = match std::fs::read_to_string(&log_file) {
-            Ok(c) => c.lines().count(),
-            Err(_) => 0,
-        };
-        let mut last_line_count: usize = initial_lines;
+        // Paper 启动时会重建 latest.log，从 offset=0 开始读
+        let mut offset: u64 = 0;
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
             let log_file_clone = log_file.clone();
-            let content = match tokio::task::spawn_blocking(move || {
-                std::fs::read_to_string(&log_file_clone)
+            let current_offset = offset;
+            let new_content = match tokio::task::spawn_blocking(move || {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut file = std::fs::File::open(&log_file_clone)?;
+                let file_len = file.metadata()?.len();
+                // 文件被截断/重建时（Paper 重启会删旧 log）重置 offset
+                let actual_offset = if file_len < current_offset { 0 } else { current_offset };
+                if file_len <= actual_offset {
+                    return Ok::<_, std::io::Error>((String::new(), actual_offset));
+                }
+                file.seek(SeekFrom::Start(actual_offset))?;
+                let to_read = (file_len - actual_offset) as usize;
+                let mut buf = vec![0u8; to_read];
+                let n = file.read(&mut buf)?;
+                buf.truncate(n);
+                let new_offset = actual_offset + n as u64;
+                Ok((String::from_utf8_lossy(&buf).to_string(), new_offset))
             })
             .await
             {
-                Ok(Ok(c)) => c,
+                Ok(Ok((s, new_off))) => {
+                    offset = new_off;
+                    s
+                }
                 _ => continue,
             };
 
-            let lines: Vec<&str> = content.lines().collect();
-            let current_count = lines.len();
-            if current_count <= last_line_count {
+            if new_content.is_empty() {
                 continue;
             }
 
-            for text in &lines[last_line_count..] {
+            // 按行推送
+            for text in new_content.lines() {
                 let text = text.to_string();
                 if text.is_empty() {
                     continue;
@@ -322,8 +335,6 @@ fn spawn_log_file_poller(
 
                 let _ = event_tx.send(ServerEvent::Log { line });
             }
-
-            last_line_count = current_count;
         }
     });
 }
